@@ -1,14 +1,11 @@
 import React, { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Catalog } from "../../lib/api";
+import { Catalog, full } from "../../lib/api";
 
 const categoryName = "Supplements";
 const species = "dog";
 
-const imgSrc = (u) =>
-  u?.startsWith("/uploads")
-    ? `http://localhost:4000${u}`
-    : u || "/images/placeholder.jpg";
+const imgSrc = (u) => full(u) || "/images/placeholder.jpg";
 
 function Card({ it }) {
   const inStock = !!it.in_stock;

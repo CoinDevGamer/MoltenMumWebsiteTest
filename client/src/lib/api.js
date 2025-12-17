@@ -1,10 +1,20 @@
 import axios from "axios";
 
+// Backend URL from Vite env variable
+const API_URL = import.meta.env.VITE_API_URL;
+
 // Create reusable Axios instance for all backend requests
 export const api = axios.create({
-  baseURL: "http://localhost:4000/api",
+  baseURL: `${API_URL}/api`,
   withCredentials: true,
 });
+
+export const full = (path) => {
+  if (!path) return "";
+  if (path.startsWith("http")) return path;
+  return `${API_URL}${path}`;
+};
+
 
 // ============================
 // 🛍️ CATALOG (FINAL MERGED VERSION)
@@ -56,7 +66,6 @@ export const Orders = {
   list: () => api.get("/orders").then((r) => r.data),
   create: (p) => api.post("/orders", p).then((r) => r.data),
   save: (p) => api.post("/orders/save", p).then((r) => r.data),
-  cancel: (id) => api.put(`/orders/${id}/cancel`).then((r) => r.data),
 };
 
 // ============================
@@ -78,6 +87,10 @@ export const Admin = {
   createSpecies: (p) => api.post("/admin/species", p).then((r) => r.data),
   deleteSpecies: (id) =>
     api.delete(`/admin/species/${id}`).then((r) => r.data),
+
+  // Orders
+  listOrders: () => api.get("/admin/orders").then((r) => r.data),
+  updateOrder: (id, p) => api.put(`/admin/orders/${id}`, p).then((r) => r.data),
 };
 
 // ============================

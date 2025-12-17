@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Auth } from "../lib/api";
+import { Auth, api } from "../lib/api";
 
 export default function AccountDrawer({
   open,
@@ -42,6 +42,17 @@ export default function AccountDrawer({
         country: prev.country || user.country || "",
       }));
       setTab("account");
+    } else {
+      // clear fields when logged out
+      setAddr({
+        name: "",
+        address_line1: "",
+        address_line2: "",
+        city: "",
+        postcode: "",
+        country: "",
+      });
+      setTab("signin");
     }
   }, [user]);
 
@@ -51,14 +62,32 @@ export default function AccountDrawer({
   const change = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const changeAddr = (k, v) => setAddr((a) => ({ ...a, [k]: v }));
 
+  const validateAddress = (payload) => {
+    const fields = [
+      ["name", "Full Name"],
+      ["address_line1", "Address Line 1"],
+      ["city", "City"],
+      ["postcode", "Postcode"],
+      ["country", "Country"],
+    ];
+    for (const [key, label] of fields) {
+      const val = (payload[key] || "").trim();
+      if (val.length < 2) return `${label} must be at least 2 characters.`;
+      if (val.length > 120) return `${label} is too long.`;
+    }
+    const pc = payload.postcode.trim();
+    if (pc.length < 4 || pc.length > 12) return "Postcode looks invalid.";
+    return null;
+  };
+
   // Save address
   const save = async () => {
-    await fetch("http://localhost:4000/api/account/me", {
-      method: "PUT",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(addr),
-    });
+    const error = validateAddress(addr);
+    if (error) {
+      alert(error);
+      return;
+    }
+    await api.put("/account/me", addr);
 
     const updated = await Auth.me();
     setUser(updated);
@@ -159,6 +188,8 @@ export default function AccountDrawer({
               className="input-etched"
               placeholder="Email"
               value={form.email}
+              name="email"
+              autoComplete="email"
               onChange={(e) => change("email", e.target.value)}
             />
 
@@ -169,6 +200,8 @@ export default function AccountDrawer({
                   className="input-etched"
                   placeholder="Full Name"
                   value={form.name}
+                  name="fullName"
+                  autoComplete="name"
                   onChange={(e) => change("name", e.target.value)}
                 />
 
@@ -176,6 +209,8 @@ export default function AccountDrawer({
                   className="input-etched"
                   placeholder="City"
                   value={form.city}
+                  name="city"
+                  autoComplete="address-level2"
                   onChange={(e) => change("city", e.target.value)}
                 />
 
@@ -183,6 +218,8 @@ export default function AccountDrawer({
                   className="input-etched"
                   placeholder="Postcode"
                   value={form.postcode}
+                  name="postcode"
+                  autoComplete="postal-code"
                   onChange={(e) => change("postcode", e.target.value)}
                 />
               </>
@@ -194,6 +231,8 @@ export default function AccountDrawer({
               placeholder="Password"
               type="password"
               value={form.password}
+              name="password"
+              autoComplete={tab === "register" ? "new-password" : "current-password"}
               onChange={(e) => change("password", e.target.value)}
             />
 
@@ -217,6 +256,9 @@ export default function AccountDrawer({
               className="input-etched"
               placeholder="Full Name"
               value={addr.name}
+              maxLength={120}
+              name="addr_name"
+              autoComplete="name"
               onChange={(e) => changeAddr("name", e.target.value)}
             />
 
@@ -224,6 +266,9 @@ export default function AccountDrawer({
               className="input-etched"
               placeholder="Address Line 1"
               value={addr.address_line1}
+              maxLength={160}
+              name="addr_line1"
+              autoComplete="address-line1"
               onChange={(e) => changeAddr("address_line1", e.target.value)}
             />
 
@@ -231,6 +276,9 @@ export default function AccountDrawer({
               className="input-etched"
               placeholder="Address Line 2"
               value={addr.address_line2}
+              maxLength={160}
+              name="addr_line2"
+              autoComplete="address-line2"
               onChange={(e) => changeAddr("address_line2", e.target.value)}
             />
 
@@ -239,6 +287,9 @@ export default function AccountDrawer({
                 className="input-etched"
                 placeholder="City"
                 value={addr.city}
+                maxLength={120}
+                name="addr_city"
+                autoComplete="address-level2"
                 onChange={(e) => changeAddr("city", e.target.value)}
               />
 
@@ -246,6 +297,9 @@ export default function AccountDrawer({
                 className="input-etched"
                 placeholder="Postcode"
                 value={addr.postcode}
+                maxLength={12}
+                name="addr_postcode"
+                autoComplete="postal-code"
                 onChange={(e) => changeAddr("postcode", e.target.value)}
               />
             </div>
@@ -254,6 +308,9 @@ export default function AccountDrawer({
               className="input-etched"
               placeholder="Country"
               value={addr.country}
+              maxLength={120}
+              name="addr_country"
+              autoComplete="country-name"
               onChange={(e) => changeAddr("country", e.target.value)}
             />
 

@@ -1,14 +1,12 @@
 import React from "react";
 import { motion } from "framer-motion";
 import ParticleBurst from "./ParticleBurst";
+import { full } from "../lib/api";
 
 export default function ItemCard({ item, onAdd }) {
   const [bursts, setBursts] = React.useState([]);
 
-  const img =
-    item.image_url?.startsWith("/uploads")
-      ? `http://localhost:4000${item.image_url}`
-      : item.image_url || "/images/placeholder.jpg";
+  const img = full(item.image_url) || "/images/placeholder.jpg";
 
   // Trigger particle explosion
   const triggerBurst = (e) => {

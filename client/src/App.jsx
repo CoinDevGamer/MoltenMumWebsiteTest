@@ -8,6 +8,7 @@ import AccountDrawer from "./components/AccountDrawer.jsx";
 import Orders from "./components/Orders.jsx";
 import AdminPanel from "./components/AdminPanel.jsx";
 import Success from "./components/Success.jsx"; // ✅ use real success component
+import Cancel from "./components/Cancel.jsx";
 
 import useToast from "./hooks/useToast.jsx";
 import { Auth, Orders as OrdersApi } from "./lib/api";
@@ -177,15 +178,8 @@ export default function App() {
 
           {/* Stripe result pages */}
           <Route path="/success" element={<Success />} />
+          <Route path="/cancel" element={<Cancel />} />
 
-          <Route
-            path="/cancel"
-            element={
-              <div className="p-10 text-center text-red-600 text-2xl">
-                ❌ Payment Cancelled.
-              </div>
-            }
-          />
         </Routes>
       </main>
 

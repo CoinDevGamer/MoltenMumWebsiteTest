@@ -59,6 +59,9 @@ CREATE TABLE IF NOT EXISTS orders (
   delivery_method TEXT DEFAULT 'collect',
   total_cents INTEGER,
   status TEXT DEFAULT 'placed',
+  admin_status TEXT DEFAULT 'awaiting',
+  delivery_date TEXT,
+  admin_note TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY(user_id) REFERENCES users(id)
 );

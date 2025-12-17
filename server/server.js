@@ -18,6 +18,60 @@ import fs from "fs";
 import Stripe from "stripe";
 import { sendMail } from "./email.js";
 import bodyParser from "body-parser";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
+
+
+// -----------------------------------------------------
+//                INPUT SAFETY HELPERS
+// -----------------------------------------------------
+const SAFE_TEXT_MAX = 200;
+const SAFE_LONG_TEXT_MAX = 2000;
+
+const safeText = (val, max = SAFE_TEXT_MAX) => {
+  if (typeof val !== "string") return "";
+  return val.trim().slice(0, max);
+};
+
+const safeLongText = (val, max = SAFE_LONG_TEXT_MAX) => safeText(val, max);
+
+const safeSlug = (val, max = 80) =>
+  safeText(val, max)
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+
+const validEmail = (val) =>
+  typeof val === "string" &&
+  /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val.trim()) &&
+  val.length <= 120;
+
+const safePrice = (val) => {
+  const n = Number(val);
+  if (isNaN(n) || n < 0 || n > 1_000_000_00) return null; // cap to £1,000,000
+  return Math.round(n);
+};
+
+const validateItemsPayload = (items = []) => {
+  if (!Array.isArray(items) || items.length === 0 || items.length > 50)
+    return null;
+  const cleaned = [];
+  for (const i of items) {
+    const id = Number(i.id);
+    const qty = Number(i.qty);
+    const price = safePrice(i.price_cents ?? 0);
+    if (!id || id < 0 || !Number.isInteger(id)) return null;
+    if (!qty || qty < 1 || qty > 99) return null;
+    cleaned.push({
+      id,
+      qty,
+      name: safeText(i.name, 160),
+      price_cents: typeof price === "number" ? price : 0,
+    });
+  }
+  return cleaned;
+};
 
 
 // ---- Delivery Range Utilities ----
@@ -90,6 +144,9 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 const ORIGIN = process.env.ORIGIN || "http://localhost:5173";
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret";
+if (!process.env.JWT_SECRET) {
+  console.warn("⚠️ Using fallback JWT secret. Set JWT_SECRET in production!");
+}
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
@@ -188,7 +245,7 @@ app.post(
 // -----------------------------------------------------
 //                 NORMAL MIDDLEWARE
 // -----------------------------------------------------
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 
 app.use(
@@ -197,8 +254,34 @@ app.use(
     credentials: true,
   })
 );
+app.use(helmet());
+
+const authLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 30,
+});
+const generalLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 300,
+});
+const uploadLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 20,
+});
+
+app.use(generalLimiter);
+app.use("/api/auth", authLimiter);
 
 seedIfNeeded();
+try {
+  db.prepare("ALTER TABLE orders ADD COLUMN admin_status TEXT DEFAULT 'awaiting'").run();
+} catch {}
+try {
+  db.prepare("ALTER TABLE orders ADD COLUMN delivery_date TEXT").run();
+} catch {}
+try {
+  db.prepare("ALTER TABLE orders ADD COLUMN admin_note TEXT").run();
+} catch {}
 
 
 // -----------------------------------------------------
@@ -209,7 +292,24 @@ function setAuthCookie(res, token) {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+    path: "/",
     maxAge: 7 * 24 * 3600 * 1000,
+  });
+}
+
+function clearAuthCookie(res) {
+  res.clearCookie("token", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+    path: "/",
+  });
+  res.cookie("token", "", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+    path: "/",
+    maxAge: 0,
   });
 }
 
@@ -260,10 +360,13 @@ function requireAdmin(req, res, next) {
 //             AUTH ROUTES — REGISTER (WITH RADIUS CHECK)
 // -----------------------------------------------------
 app.post("/api/auth/register", async (req, res) => {
-  const { name = "", email, password, postcode } = req.body;
+  const { postcode } = req.body;
+  const name = safeText(req.body.name || "", 120);
+  const email = safeText(req.body.email || "", 120);
+  const password = req.body.password || "";
 
   // Basic required fields
-  if (!email || !password)
+  if (!validEmail(email) || typeof password !== "string" || password.length < 6)
     return res.status(400).json({ error: "Missing fields" });
 
   // Require postcode
@@ -284,7 +387,7 @@ app.post("/api/auth/register", async (req, res) => {
       .prepare(
         "INSERT INTO users (name,email,password_hash,postcode) VALUES (?,?,?,?)"
       )
-      .run(name, email, bcrypt.hashSync(password, 10), postcode)
+      .run(name, email, bcrypt.hashSync(password, 10), safeText(postcode, 20))
       .lastInsertRowid;
 
     // Authenticate new user
@@ -302,10 +405,11 @@ app.post("/api/auth/register", async (req, res) => {
 
 
 app.post("/api/auth/login", (req, res) => {
-  const { email, password } = req.body;
+  const email = safeText(req.body.email || "", 120);
+  const password = req.body.password || "";
   const u = db.prepare("SELECT * FROM users WHERE email=?").get(email);
 
-  if (!u || !bcrypt.compareSync(password, u.password_hash))
+  if (!u || typeof password !== "string" || !bcrypt.compareSync(password, u.password_hash))
     return res.status(401).json({ error: "Invalid credentials" });
 
   const token = jwt.sign({ id: u.id, email }, JWT_SECRET, { expiresIn: "7d" });
@@ -315,7 +419,7 @@ app.post("/api/auth/login", (req, res) => {
 });
 
 app.post("/api/auth/logout", (req, res) => {
-  res.clearCookie("token");
+  clearAuthCookie(res);
   res.json({ ok: true });
 });
 
@@ -351,7 +455,7 @@ app.get("/api/species", (req, res) => {
 // -----------------------------------------------------
 app.post("/api/admin/categories", auth, requireAdmin, (req, res) => {
   const { name = "" } = req.body;
-  const trimmed = name.trim();
+  const trimmed = safeText(name, 80);
   if (!trimmed) return res.status(400).json({ error: "Name required" });
 
   const slug = trimmed.toLowerCase().replace(/\s+/g, "-");
@@ -392,11 +496,11 @@ app.delete("/api/admin/categories/:id", auth, requireAdmin, (req, res) => {
 app.post("/api/admin/species", auth, requireAdmin, (req, res) => {
   let { label = "", slug = "", icon = "" } = req.body;
 
-  label = label.trim();
+  label = safeText(label, 80);
   if (!label) return res.status(400).json({ error: "Label required" });
 
   if (!slug) slug = label;
-  slug = slug.toLowerCase().replace(/\s+/g, "-");
+  slug = safeSlug(slug, 80);
 
   try {
     const id = db
@@ -440,14 +544,15 @@ app.delete("/api/admin/species/:id", auth, requireAdmin, (req, res) => {
 app.post("/api/admin/items", auth, requireAdmin, (req, res) => {
   const {
     id,
-    name,
-    description = "",
     category_id,
-    species = "",
-    image_url = "",
     in_stock = 1,
     special_offer = 0,
   } = req.body;
+
+  const name = safeText(req.body.name, 160);
+  const description = safeLongText(req.body.description, 2000);
+  const species = safeSlug(req.body.species || "", 80);
+  const image_url = safeText(req.body.image_url || req.body.image || "", 500);
 
   let { price_cents } = req.body;
 
@@ -455,9 +560,8 @@ app.post("/api/admin/items", auth, requireAdmin, (req, res) => {
     return res.status(400).json({ error: "Missing name/category" });
 
   // normalise price
-  price_cents = Number(price_cents);
-  if (isNaN(price_cents) || price_cents < 0)
-    return res.status(400).json({ error: "Bad price" });
+  price_cents = safePrice(req.body.price_cents);
+  if (price_cents === null) return res.status(400).json({ error: "Bad price" });
 
   try {
     if (id) {
@@ -544,8 +648,11 @@ app.get("/api/items", (req, res) => {
 
   // search query
   if (q) {
-    sql += " AND items.name LIKE ?";
-    params.push(`%${q}%`);
+    const safeQ = safeText(q, 80);
+    if (safeQ) {
+      sql += " AND items.name LIKE ?";
+      params.push(`%${safeQ}%`);
+    }
   }
 
   sql += " ORDER BY items.id DESC";
@@ -558,25 +665,92 @@ app.get("/api/items", (req, res) => {
 // -----------------------------------------------------
 //              ORDERS (MANUAL PLACEMENT)
 // -----------------------------------------------------
-app.post("/api/orders", auth, (req, res) => {
-  const { items, total_cents, delivery_method } = req.body;
+app.post("/api/orders", auth, async (req, res) => {
+  try {
+    const { items, total_cents, delivery_method = "collect" } = req.body;
 
-  const user = db.prepare("SELECT * FROM users WHERE id=?").get(req.user.id);
+    // Fetch user snapshot for address + email purposes
+    const user = db.prepare("SELECT * FROM users WHERE id=?").get(req.user.id);
 
-  const orderId = db
-    .prepare(
-      `INSERT INTO orders (user_id,items_json,address_json,delivery_method,total_cents,status)
-       VALUES (?,?,?,?,?,'placed')`
-    )
-    .run(
-      req.user.id,
-      JSON.stringify(items),
-      JSON.stringify(user),
-      delivery_method,
-      total_cents
-    ).lastInsertRowid;
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: "No items provided" });
+    }
 
-  res.json({ ok: true });
+    const cleanedItems = validateItemsPayload(items);
+    if (!cleanedItems) return res.status(400).json({ error: "Bad items payload" });
+
+    const safeTotal = safePrice(total_cents);
+    if (safeTotal === null) return res.status(400).json({ error: "Bad total" });
+
+    const itemsJson = JSON.stringify(cleanedItems);
+
+    // Deduplicate recent identical orders (within 24h) to avoid double email when webhook also fires
+    const existing = db
+      .prepare(
+        `
+        SELECT id FROM orders
+        WHERE user_id=? AND total_cents=? AND delivery_method=? AND items_json=?
+          AND datetime(created_at) >= datetime('now', '-1 day')
+        ORDER BY id DESC LIMIT 1
+      `
+      )
+      .get(req.user.id, safeTotal, delivery_method, itemsJson);
+
+    if (existing) {
+      return res.json({ ok: true, orderId: existing.id, deduped: true });
+    }
+
+    const orderId = db
+      .prepare(
+        `INSERT INTO orders 
+         (user_id, items_json, address_json, delivery_method, total_cents, status)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        req.user.id,
+        itemsJson,
+        JSON.stringify(user),
+        delivery_method,
+        safeTotal,
+        "placed"
+      ).lastInsertRowid;
+
+    // Send admin notification (fallback when webhook missing)
+    try {
+      await sendMail({
+        subject: `🐾 Order received #${orderId}`,
+        html: `
+          <h1>Order #${orderId}</h1>
+          <p><b>User:</b> ${user.name || ""} (${user.email || ""})</p>
+          <p><b>Delivery:</b> ${delivery_method}</p>
+          <p><b>Address:</b><br>
+            ${user.address_line1 || ""}<br>
+            ${user.city || ""}, ${user.postcode || ""}<br>
+            ${user.country || ""}
+          </p>
+          <h2>Items</h2>
+          <ul>
+            ${cleanedItems
+              .map(
+                (i) =>
+                  `<li>${i.qty} × ${safeText(i.name, 160)} — £${(
+                    (i.price_cents || 0) / 100
+                  ).toFixed(2)}</li>`
+              )
+              .join("")}
+          </ul>
+          <p><b>Total:</b> £${((safeTotal || 0) / 100).toFixed(2)}</p>
+        `,
+      });
+    } catch (err) {
+      console.error("❌ Email send (orders fallback) failed:", err);
+    }
+
+    res.json({ ok: true, orderId });
+  } catch (err) {
+    console.error("Order creation error (orders route):", err);
+    res.status(500).json({ error: "Failed to create order" });
+  }
 });
 
 
@@ -597,7 +771,7 @@ app.put("/api/account/me", auth, (req, res) => {
     const incoming = req.body || {};
 
     const clean = (val) =>
-      typeof val === "string" ? val.trim().replace(/\s+/g, " ") : "";
+      typeof val === "string" ? val.trim().replace(/\s+/g, " ").slice(0, 200) : "";
 
     const updates = [];
     const params = [];
@@ -639,43 +813,6 @@ app.put("/api/account/me", auth, (req, res) => {
 
 
 // -----------------------------------------------------
-//            ORDERS (PAID ORDERS FROM SUCCESS PAGE)
-// -----------------------------------------------------
-app.post("/api/orders", auth, (req, res) => {
-  try {
-    const { items, total_cents, delivery_method } = req.body;
-
-    // Fetch user snapshot (to store address at order time)
-    const user = db.prepare("SELECT * FROM users WHERE id=?").get(req.user.id);
-
-    if (!items || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ error: "No items provided" });
-    }
-
-    const orderId = db
-      .prepare(
-        `INSERT INTO orders 
-         (user_id, items_json, address_json, delivery_method, total_cents, status)
-         VALUES (?, ?, ?, ?, ?, 'paid')`
-      )
-      .run(
-        req.user.id,
-        JSON.stringify(items),
-        JSON.stringify(user), // save full address snapshot
-        delivery_method || "collect",
-        total_cents
-      ).lastInsertRowid;
-
-    res.json({ ok: true, orderId });
-  } catch (err) {
-    console.error("Order creation error:", err);
-    res.status(500).json({ error: "Failed to create order" });
-  }
-});
-
-
-
-// -----------------------------------------------------
 //            IMAGE UPLOAD (ADMIN ONLY)
 // -----------------------------------------------------
 const uploadDir = path.join(process.cwd(), "uploads");
@@ -691,7 +828,7 @@ const storage = multer.diskStorage({
   },
 });
 
-// only allow images
+// only allow images, cap size ~5MB
 function fileFilter(req, file, cb) {
   const allowed = [".jpg", ".jpeg", ".png", ".webp"];
   const ext = path.extname(file.originalname).toLowerCase();
@@ -699,12 +836,17 @@ function fileFilter(req, file, cb) {
   cb(null, true);
 }
 
-const upload = multer({ storage, fileFilter });
+const upload = multer({
+  storage,
+  fileFilter,
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
 
 app.post(
   "/api/admin/upload",
   auth,
   requireAdmin,
+  uploadLimiter,
   upload.single("image"),
   (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
@@ -802,6 +944,52 @@ app.get("/api/orders", auth, (req, res) => {
     .prepare("SELECT * FROM orders WHERE user_id=? ORDER BY id DESC")
     .all(req.user.id);
   res.json(rows);
+});
+
+// ADMIN ORDERS
+app.get("/api/admin/orders", auth, requireAdmin, (req, res) => {
+  const active = db
+    .prepare(
+      `
+      SELECT o.*, u.email AS user_email, u.name AS user_name
+      FROM orders o
+      JOIN users u ON u.id = o.user_id
+      WHERE datetime(o.created_at) >= datetime('now','-5 day')
+      ORDER BY o.id DESC
+    `
+    )
+    .all();
+
+  const archived = db
+    .prepare(
+      `
+      SELECT o.*, u.email AS user_email, u.name AS user_name
+      FROM orders o
+      JOIN users u ON u.id = o.user_id
+      WHERE datetime(o.created_at) < datetime('now','-5 day')
+      ORDER BY o.id DESC
+      LIMIT 200
+    `
+    )
+    .all();
+
+  res.json({ active, archived });
+});
+
+app.put("/api/admin/orders/:id", auth, requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ error: "Invalid ID" });
+
+  const admin_status = safeText(req.body.admin_status || "awaiting", 40);
+  const delivery_date = safeText(req.body.delivery_date || "", 40);
+  const admin_note = safeLongText(req.body.admin_note || "", 1000);
+
+  db.prepare(
+    `UPDATE orders SET admin_status=?, delivery_date=?, admin_note=? WHERE id=?`
+  ).run(admin_status, delivery_date, admin_note, id);
+
+  const updated = db.prepare("SELECT * FROM orders WHERE id=?").get(id);
+  res.json(updated);
 });
 
 

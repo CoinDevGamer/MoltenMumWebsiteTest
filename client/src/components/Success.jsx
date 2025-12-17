@@ -9,36 +9,34 @@ export default function Success() {
 
   useEffect(() => {
     const raw = localStorage.getItem("pendingOrder");
-    if (!raw) {
-      setStatus("ok"); // nothing to save (maybe user refreshed)
-      return;
-    }
-
-    let snapshot;
-    try {
-      snapshot = JSON.parse(raw);
-    } catch {
-      console.error("Invalid pendingOrder JSON");
-      setStatus("fail");
-      return;
-    }
-
-    // Keep snapshot so we can show a cute order summary
-    setSummary(snapshot);
-
-    OrdersApi.create({
-      items: snapshot.items || [],
-      total_cents: snapshot.total_cents,
-      delivery_method: snapshot.delivery_method || "collect",
-    })
-      .then(() => {
-        setStatus("ok");
-        localStorage.removeItem("pendingOrder");
-      })
-      .catch((err) => {
-        console.error("Failed to save order:", err);
+    if (raw) {
+      let snapshot;
+      try {
+        snapshot = JSON.parse(raw);
+      } catch {
+        console.error("Invalid pendingOrder JSON");
         setStatus("fail");
-      });
+        return;
+      }
+
+      setSummary(snapshot);
+
+      OrdersApi.create({
+        items: snapshot.items || [],
+        total_cents: snapshot.total_cents,
+        delivery_method: snapshot.delivery_method || "collect",
+      })
+        .then(() => {
+          setStatus("ok");
+          localStorage.removeItem("pendingOrder");
+        })
+        .catch((err) => {
+          console.error("Failed to save order:", err);
+          setStatus("fail");
+        });
+    } else {
+      setStatus("fail");
+    }
   }, []);
 
   const isFail = status === "fail";
