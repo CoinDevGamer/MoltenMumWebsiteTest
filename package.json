@@ -9,6 +9,7 @@
     "commander": "^13.1.0",
     "commondir": "^1.0.1",
     "dir-glob": "^3.0.1",
+    "dotenv": "^17.2.3",
     "email-addresses": "^5.0.0",
     "escape-string-regexp": "^1.0.5",
     "fast-glob": "^3.3.3",
@@ -49,7 +50,6 @@
     "trim-repeated": "^1.0.0",
     "universalify": "^2.0.1"
   },
-  "devDependencies": {},
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
